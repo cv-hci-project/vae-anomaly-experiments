@@ -265,7 +265,7 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
             "kl_pr": kl_pr, "rec_pr": rec_pr, "loss_pr": loss_pr,
         }, file_, indent=4)
 
-    elog.save_model(model, "vae_mnist")
+    elog.save_model(model, "vae_concrete_crack")
 
 
 def view_trained_model():
