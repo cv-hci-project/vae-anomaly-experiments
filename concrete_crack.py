@@ -225,13 +225,14 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
         n_epochs=n_epochs
     )
 
-    image_size = 227 * 227 * 1
+    image_size = 227 * 227 * 3
     input_size = image_size * scaling
-    device = torch.device("cpu")
+    device = torch.device("cuda")
 
     kwargs = {'num_workers': 1, 'pin_memory': True}
 
-    transform_functions = transforms.Compose([transforms.ToPILImage(), transforms.Grayscale(), transforms.ToTensor()])
+    #transform_functions = transforms.Compose([transforms.ToPILImage(), transforms.Grayscale(), transforms.ToTensor()])
+    transform_functions = transforms.Compose([transforms.ToTensor()])
 
     train_set = ConcreteCracksDataset(root_dir='/home/pdeubel/PycharmProjects/data/Concrete-Crack-Images', train=True,
                                       transform=transform_functions)
