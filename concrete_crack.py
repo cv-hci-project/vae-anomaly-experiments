@@ -16,6 +16,7 @@ from trixi.logger.experiment.pytorchexperimentlogger import PytorchExperimentLog
 from trixi.util import Config
 from trixi.util.pytorchutils import set_seed
 
+from models.enc_dec import Encoder, Generator
 
 # matplotlib.use("Agg") #  , warn=True)
 
@@ -47,6 +48,61 @@ class VAE(nn.Module):
         mu, logstd = self.encode(x)
         z = self.reparameterize(mu, logstd)
         return self.decode(z), mu, logstd
+
+
+class VAEConv(torch.nn.Module):
+    def __init__(self, input_size, h_size, z_dim, to_1x1=True, conv_op=torch.nn.Conv2d,
+                 upsample_op=torch.nn.ConvTranspose2d, normalization_op=None, activation_op=torch.nn.LeakyReLU,
+                 conv_params=None, activation_params=None, block_op=None, block_params=None, output_channels=None,
+                 additional_input_slices=None,
+                 *args, **kwargs):
+
+        super().__init__()
+
+        input_size_enc = list(input_size)
+        input_size_dec = list(input_size)
+        if output_channels is not None:
+            input_size_dec[0] = output_channels
+        if additional_input_slices is not None:
+            input_size_enc[0] += additional_input_slices * 2
+
+        self.encoder = Encoder(image_size=input_size_enc, h_size=h_size, z_dim=z_dim * 2,
+                               normalization_op=normalization_op, to_1x1=to_1x1, conv_op=conv_op,
+                               conv_params=conv_params,
+                               activation_op=activation_op, activation_params=activation_params, block_op=block_op,
+                               block_params=block_params)
+        self.decoder = Generator(image_size=input_size_dec, h_size=h_size[::-1], z_dim=z_dim,
+                                 normalization_op=normalization_op, to_1x1=to_1x1, upsample_op=upsample_op,
+                                 conv_params=conv_params, activation_op=activation_op,
+                                 activation_params=activation_params, block_op=block_op,
+                                 block_params=block_params)
+
+        self.hidden_size = self.encoder.output_size
+
+    def forward(self, inpt, sample=None, **kwargs):
+        enc = self.encoder(inpt, **kwargs)
+
+        mu, log_std = torch.chunk(enc, 2, dim=1)
+        std = torch.exp(log_std)
+        z_dist = dist.Normal(mu, std)
+
+        if sample or self.training:
+            z = z_dist.rsample()
+        else:
+            z = mu
+
+        x_rec = self.decoder(z, **kwargs)
+
+        return x_rec, mu, std
+
+    def encode(self, inpt, **kwargs):
+        enc = self.encoder(inpt, **kwargs)
+        mu, log_std = torch.chunk(enc, 2, dim=1)
+        return mu, log_std
+
+    def decode(self, inpt, **kwargs):
+        x_rec = self.decoder(inpt, **kwargs)
+        return x_rec
 
 
 class ConcreteCracksDataset(torch.utils.data.Dataset):
@@ -119,7 +175,8 @@ def train(epoch, model, optimizer, train_loader, device, scaling, vlog, elog, lo
     train_loss = 0
     for batch_idx, data in enumerate(train_loader):
         data = data.to(device)
-        data_flat = data.flatten(start_dim=1).repeat(1, scaling)
+        data_flat = data
+        # data_flat = data.flatten(start_dim=1).repeat(1, scaling)
         optimizer.zero_grad()
         recon_batch, mu, logvar = model(data_flat)
         loss, kl, rec = loss_function(recon_batch, data_flat, mu, logvar, log_var_std)
@@ -147,7 +204,8 @@ def test(model, test_loader, device, scaling, vlog, elog, image_size, batch_size
     with torch.no_grad():
         for i, (data, _) in enumerate(test_loader):
             data = data.to(device)
-            data_flat = data.flatten(start_dim=1).repeat(1, scaling)
+            data_flat = data
+            #data_flat = data.flatten(start_dim=1).repeat(1, scaling)
             recon_batch, mu, logvar = model(data_flat)
             loss, kl, rec = loss_function(recon_batch, data_flat, mu, logvar, log_var_std)
             test_loss += (kl + rec).tolist()
@@ -231,8 +289,8 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
 
     kwargs = {'num_workers': 1, 'pin_memory': True}
 
-    #transform_functions = transforms.Compose([transforms.ToPILImage(), transforms.Grayscale(), transforms.ToTensor()])
-    transform_functions = transforms.Compose([transforms.ToTensor()])
+    transform_functions = transforms.Compose([transforms.ToPILImage(), transforms.CenterCrop((224, 224)), transforms.ToTensor()])
+    #transform_functions = transforms.Compose([transforms.ToTensor()])
 
     train_set = ConcreteCracksDataset(root_dir='/home/pdeubel/PycharmProjects/data/Concrete-Crack-Images', train=True,
                                       transform=transform_functions)
@@ -244,8 +302,12 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size, shuffle=False, **kwargs)
     # test_loader_abnorm = torch.utils.data.DataLoader(test_set, sampler=test_one_set,
     #                                                  batch_size=batch_size, shuffle=False, **kwargs)
-    model = VAE(z=z, input_size=input_size).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    # model = VAE(z=z, input_size=input_size).to(device)
+    input_shape = (batch_size, 3, 227, 227)
+    model_h_size = (16, 32, 64, 256)
+    model = VAEConv(input_size=input_shape[1:], h_size=model_h_size, z_dim=z).to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     vlog = PytorchVisdomLogger(exp_name="vae-concrete-cracks")
     elog = PytorchExperimentLogger(base_dir="logs/concrete-cracks", exp_name="concrete-cracks_vae")
@@ -254,6 +316,7 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
 
     for epoch in range(1, n_epochs + 1):
         train(epoch, model, optimizer, train_loader, device, scaling, vlog, elog, log_var_std)
+        elog.save_model(model, "vae_concrete_crack")
 
     kl_roc, rec_roc, loss_roc, kl_pr, rec_pr, loss_pr = test(model, test_loader, device,
                                                              scaling, vlog, elog,
@@ -269,11 +332,11 @@ def model_run(scaling, batch_size, odd_class, z, seed=123, log_var_std=0, n_epoc
 
 
 def view_trained_model():
-    model = VAE()
-    model.load_state_dict(torch.load("logs/mnist_exp_fin/20210427-192028_fashion-mnist_vae/checkpoint/vae_mnist.pth"))
+    model = VAE(z=100, input_size=227 * 227 * 3)
+    model.load_state_dict(torch.load("logs/concrete-cracks/20210428-001437_concrete-cracks_vae/checkpoint/vae_concrete_crack.pth", map_location=torch.device("cpu")))
 
     for _ in range(5):
-        matplotlib.pyplot.imshow(np.transpose(model.decode(torch.randn(20)).view(28, 28, 1).detach().numpy(), (1, 2, 0)))
+        matplotlib.pyplot.imshow(np.transpose(model.decode(torch.randn(100)).view(3, 227, 227).detach().numpy(), (2, 1, 0)))
         matplotlib.pyplot.show()
 
 
@@ -281,7 +344,7 @@ if __name__ == '__main__':
     scaling = 1
     batch_size = 128
     odd_class = 0
-    z = 20
+    z = 100
     seed = 123
     log_var_std = 0.
 
