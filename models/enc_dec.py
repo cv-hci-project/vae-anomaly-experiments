@@ -70,7 +70,8 @@ class ConvModule(nn.Module):
 class Generator(nn.Module):
     def __init__(self, image_size, z_dim=256, h_size=(256, 128, 64),
                  upsample_op=nn.ConvTranspose2d, normalization_op=nn.InstanceNorm2d, activation_op=nn.LeakyReLU,
-                 conv_params=None, activation_params=None, block_op=None, block_params=None, to_1x1=True):
+                 conv_params=None, activation_params=None, block_op=None, block_params=None, to_1x1=True,
+                 output_activation=None):
 
         super(Generator, self).__init__()
 
@@ -146,7 +147,7 @@ class Generator(nn.Module):
                               conv_op=upsample_op,
                               conv_params=dict(kernel_size=4, stride=2, padding=1, bias=False, **conv_params),
                               normalization_op=None,
-                              activation_op=None)
+                              activation_op=output_activation)
 
     def forward(self, inpt, **kwargs):
         output = self.start(inpt, **kwargs)
